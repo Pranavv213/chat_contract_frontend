@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ethers } from 'ethers';
 import './App.css';
 
 function App() {
@@ -82,7 +81,7 @@ function App() {
       }
     } catch (error) {
       setBackendStatus('error');
-      addBotMessage('❌ Cannot connect to backend. Please start the backend server with: python app.py');
+      addBotMessage('❌ Cannot connect to backend. Please start the backend server with: python main.py');
     }
   };
 
@@ -155,14 +154,15 @@ function App() {
       
       addSystemMessage('🤖 AI is analyzing your question...');
       
-      // Step 1: Call backend
+      // Call backend (which now handles both AI and contract calls)
       const response = await fetch('http://localhost:8000/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contract_address: contractAddress,
           abi: parsedAbi,
-          query: query
+          query: query,
+          rpc_url: rpcUrl  // Send RPC URL to backend
         })
       });
       
@@ -179,41 +179,21 @@ function App() {
         available_functions: data.available_functions
       });
       
-      addSystemMessage(`🎯 AI decided to call: ${data.function}(${data.parameters.map(p => `"${p}"`).join(', ')})`);
-      
-      // Step 2: Call contract
-      if (data.function && data.function !== '') {
-        addSystemMessage(`⛓️ Calling ${data.function}() on the blockchain...`);
+      if (data.success) {
+        // Success case - backend already called the contract
+        addSystemMessage(`🎯 AI decided to call: ${data.function}(${data.parameters.map(p => `"${p}"`).join(', ')})`);
+        addSystemMessage(`⛓️ Contract call successful!`);
         
-        // Create provider
-        const provider = new ethers.JsonRpcProvider(rpcUrl);
-        
-        // Create contract
-        const contract = new ethers.Contract(contractAddress, parsedAbi, provider);
-        
-        // Check if function exists
-        if (!contract[data.function]) {
-          throw new Error(`Function "${data.function}" not found`);
-        }
-        
-        // Call the function
-        let contractResult;
-        if (data.parameters && data.parameters.length > 0) {
-          contractResult = await contract[data.function](...data.parameters);
-        } else {
-          contractResult = await contract[data.function]();
-        }
-        
-        // Format result
+        // Format the result for display
         let formattedResult;
-        if (typeof contractResult === 'bigint') {
-          formattedResult = contractResult.toString();
-        } else if (typeof contractResult === 'string') {
-          formattedResult = contractResult;
-        } else if (contractResult && contractResult.toString) {
-          formattedResult = contractResult.toString();
+        if (typeof data.result === 'bigint') {
+          formattedResult = data.result.toString();
+        } else if (typeof data.result === 'string') {
+          formattedResult = data.result;
+        } else if (data.result && typeof data.result === 'object') {
+          formattedResult = JSON.stringify(data.result, null, 2);
         } else {
-          formattedResult = JSON.stringify(contractResult, null, 2);
+          formattedResult = String(data.result);
         }
         
         setResult(formattedResult);
@@ -222,18 +202,24 @@ function App() {
         addBotMessage(`Here's what I found:\n\n${formattedResult}`);
         
       } else {
-        throw new Error('Could not determine which function to call');
+        // Error case
+        const errorMsg = data.error || 'Failed to execute query';
+        addSystemMessage(`❌ Error: ${errorMsg}`, true);
+        setError(errorMsg);
+        
+        // Show available functions if any
+        if (data.available_functions && data.available_functions.length > 0) {
+          addSystemMessage(`Available functions: ${data.available_functions.join(', ')}`);
+        }
       }
       
     } catch (err) {
       console.error('Error:', err);
-      let errorMsg;
+      let errorMsg = err.message;
       if (err.message.includes('could not detect network')) {
         errorMsg = 'Cannot connect to blockchain. Please check the RPC URL';
       } else if (err.message.includes('function not found')) {
-        errorMsg = `Function not found in contract. Available functions: ${llmDecision?.available_functions?.join(', ')}`;
-      } else {
-        errorMsg = err.message;
+        errorMsg = `Function not found in contract.`;
       }
       addSystemMessage(`❌ Error: ${errorMsg}`, true);
       setError(errorMsg);
