@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
 import './App.css';
 
@@ -14,6 +14,9 @@ function App() {
   const [llmDecision, setLlmDecision] = useState(null);
   const [error, setError] = useState('');
   const [backendStatus, setBackendStatus] = useState('checking');
+  
+  const [messages, setMessages] = useState([]);
+  const messagesEndRef = useRef(null);
 
   // Sample ABI for testing
   const sampleAbi = `[
@@ -49,45 +52,93 @@ function App() {
 
   useEffect(() => {
     testBackendConnection();
-    // Set sample ABI for testing
     setAbi(sampleAbi);
+    // Add welcome message
+    setMessages([{
+      id: Date.now(),
+      type: 'bot',
+      content: '👋 Hi! I\'m your Smart Contract Assistant. Ask me anything about the smart contract!',
+      timestamp: new Date()
+    }]);
   }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
 
   const testBackendConnection = async () => {
     try {
       const response = await fetch('http://localhost:8000/');
       if (response.ok) {
         setBackendStatus('connected');
+        addBotMessage('✅ Backend is connected and ready!');
       } else {
         setBackendStatus('error');
+        addBotMessage('❌ Backend connection failed. Please make sure the backend server is running.');
       }
     } catch (error) {
       setBackendStatus('error');
+      addBotMessage('❌ Cannot connect to backend. Please start the backend server with: python app.py');
     }
+  };
+
+  const addBotMessage = (content) => {
+    setMessages(prev => [...prev, {
+      id: Date.now(),
+      type: 'bot',
+      content: content,
+      timestamp: new Date()
+    }]);
+  };
+
+  const addUserMessage = (content) => {
+    setMessages(prev => [...prev, {
+      id: Date.now(),
+      type: 'user',
+      content: content,
+      timestamp: new Date()
+    }]);
+  };
+
+  const addSystemMessage = (content, isError = false) => {
+    setMessages(prev => [...prev, {
+      id: Date.now(),
+      type: 'system',
+      content: content,
+      isError: isError,
+      timestamp: new Date()
+    }]);
   };
 
   const handleSubmit = async () => {
     // Validation
     if (!contractAddress || !contractAddress.startsWith('0x')) {
-      setError('Please enter a valid contract address');
+      addSystemMessage('Please enter a valid contract address', true);
       return;
     }
     
     if (!rpcUrl) {
-      setError('Please enter an RPC URL');
+      addSystemMessage('Please enter an RPC URL', true);
       return;
     }
     
     if (!abi) {
-      setError('Please paste the contract ABI');
+      addSystemMessage('Please paste the contract ABI', true);
       return;
     }
     
     if (!query) {
-      setError('Please enter your question');
+      addSystemMessage('Please enter your question', true);
       return;
     }
 
+    // Add user message to chat
+    addUserMessage(query);
+    
     setLoading(true);
     setError('');
     setResult(null);
@@ -95,7 +146,6 @@ function App() {
 
     try {
       // Parse ABI
-      setLoadingStep('Parsing ABI...');
       let parsedAbi;
       try {
         parsedAbi = JSON.parse(abi);
@@ -103,8 +153,9 @@ function App() {
         throw new Error('Invalid ABI JSON format');
       }
       
+      addSystemMessage('🤖 AI is analyzing your question...');
+      
       // Step 1: Call backend
-      setLoadingStep('🤖 Asking AI...');
       const response = await fetch('http://localhost:8000/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -128,9 +179,11 @@ function App() {
         available_functions: data.available_functions
       });
       
+      addSystemMessage(`🎯 AI decided to call: ${data.function}(${data.parameters.map(p => `"${p}"`).join(', ')})`);
+      
       // Step 2: Call contract
       if (data.function && data.function !== '') {
-        setLoadingStep(`⛓️ Calling ${data.function}...`);
+        addSystemMessage(`⛓️ Calling ${data.function}() on the blockchain...`);
         
         // Create provider
         const provider = new ethers.JsonRpcProvider(rpcUrl);
@@ -164,22 +217,28 @@ function App() {
         }
         
         setResult(formattedResult);
+        
+        // Add bot response with the result
+        addBotMessage(`Here's what I found:\n\n${formattedResult}`);
+        
       } else {
-        setError('Could not determine which function to call');
+        throw new Error('Could not determine which function to call');
       }
       
     } catch (err) {
       console.error('Error:', err);
+      let errorMsg;
       if (err.message.includes('could not detect network')) {
-        setError('Cannot connect to blockchain. Check RPC URL');
+        errorMsg = 'Cannot connect to blockchain. Please check the RPC URL';
       } else if (err.message.includes('function not found')) {
-        setError(`Function not found in contract. Available: ${llmDecision?.available_functions?.join(', ')}`);
+        errorMsg = `Function not found in contract. Available functions: ${llmDecision?.available_functions?.join(', ')}`;
       } else {
-        setError(err.message);
+        errorMsg = err.message;
       }
+      addSystemMessage(`❌ Error: ${errorMsg}`, true);
+      setError(errorMsg);
     } finally {
       setLoading(false);
-      setLoadingStep('');
     }
   };
 
@@ -189,96 +248,168 @@ function App() {
     setAbi(sampleAbi);
     setQuery('');
     setError('');
+    addSystemMessage('📋 Loaded USDC contract on Polygon as sample');
+  };
+
+  const formatTime = (date) => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   return (
     <div className="App">
-      <div className="container">
-        <div className="header">
-          <h1>🤖 Smart Contract Assistant</h1>
-          <p>Powered by Local AI (Ollama + Llama 3.2)</p>
-          <div className={`backend-status ${backendStatus}`}>
-            {backendStatus === 'connected' ? '✅ Backend Connected' : '❌ Backend Not Running'}
+      <div className="chat-container">
+        {/* Sidebar */}
+        <div className="sidebar">
+          <div className="sidebar-header">
+            <h2>🤖 Smart Contract Assistant</h2>
+            <div className={`status-badge ${backendStatus}`}>
+              {backendStatus === 'connected' ? '🟢 Online' : '🔴 Offline'}
+            </div>
+          </div>
+          
+          <div className="config-section">
+            <button onClick={loadSample} className="sample-chat-btn">
+              📋 Load Sample Contract
+            </button>
+            
+            <div className="config-group">
+              <label>📍 Contract Address</label>
+              <input
+                type="text"
+                value={contractAddress}
+                onChange={(e) => setContractAddress(e.target.value)}
+                placeholder="0x..."
+                disabled={loading}
+              />
+            </div>
+            
+            <div className="config-group">
+              <label>🔗 RPC URL</label>
+              <input
+                type="text"
+                value={rpcUrl}
+                onChange={(e) => setRpcUrl(e.target.value)}
+                placeholder="https://..."
+                disabled={loading}
+              />
+            </div>
+            
+            <div className="config-group">
+              <label>📄 Contract ABI</label>
+              <textarea
+                rows={4}
+                value={abi}
+                onChange={(e) => setAbi(e.target.value)}
+                disabled={loading}
+                placeholder="Paste ABI here..."
+              />
+            </div>
           </div>
         </div>
         
-        <div className="content">
-          <button onClick={loadSample} className="sample-btn">
-            📋 Load Sample (USDC on Polygon)
-          </button>
-          
-          <div className="input-group">
-            <label>📍 Contract Address</label>
-            <input
-              type="text"
-              value={contractAddress}
-              onChange={(e) => setContractAddress(e.target.value)}
-              placeholder="0x..."
-              disabled={loading}
-            />
+        {/* Chat Area */}
+        <div className="chat-area">
+          <div className="chat-header">
+            <h3>💬 Conversation</h3>
+            <button 
+              onClick={() => {
+                setMessages([{
+                  id: Date.now(),
+                  type: 'bot',
+                  content: '👋 Hi! I\'m your Smart Contract Assistant. Ask me anything about the smart contract!',
+                  timestamp: new Date()
+                }]);
+                setResult(null);
+                setLlmDecision(null);
+                setError('');
+              }} 
+              className="clear-chat-btn"
+            >
+              🗑️ Clear Chat
+            </button>
           </div>
           
-          <div className="input-group">
-            <label>🔗 RPC URL (HTTP/HTTPS)</label>
-            <input
-              type="text"
-              value={rpcUrl}
-              onChange={(e) => setRpcUrl(e.target.value)}
-              placeholder="https://..."
-              disabled={loading}
-            />
-          </div>
-          
-          <div className="input-group">
-            <label>📄 Contract ABI</label>
-            <textarea
-              rows={6}
-              value={abi}
-              onChange={(e) => setAbi(e.target.value)}
-              disabled={loading}
-              style={{ fontFamily: 'monospace', fontSize: '12px' }}
-            />
-          </div>
-          
-          <div className="input-group">
-            <label>💬 Your Question</label>
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g., What is the name? or Total supply"
-              disabled={loading}
-              onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
-            />
-          </div>
-          
-          <button onClick={handleSubmit} disabled={loading || backendStatus !== 'connected'}>
-            {loading ? `⏳ ${loadingStep}` : '🚀 Ask Contract'}
-          </button>
-          
-          {error && (
-            <div className="error-message">
-              ❌ {error}
-            </div>
-          )}
-          
-          {llmDecision && llmDecision.function_name && (
-            <div className="llm-decision">
-              <h3>🧠 AI Decision</h3>
-              <p><strong>Function:</strong> <code>{llmDecision.function_name}()</code></p>
-              <p><strong>Parameters:</strong> <code>{JSON.stringify(llmDecision.parameters)}</code></p>
-              <p><strong>Available:</strong> {llmDecision.available_functions?.join(', ')}</p>
-            </div>
-          )}
-          
-          {result && (
-            <div className="result">
-              <h3>✅ Result</h3>
-              <div className="result-content">
-                <pre>{result}</pre>
+          <div className="messages-container">
+            {messages.map((message) => (
+              <div key={message.id} className={`message ${message.type}`}>
+                <div className="message-avatar">
+                  {message.type === 'user' ? '👤' : message.type === 'bot' ? '🤖' : '⚙️'}
+                </div>
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-sender">
+                      {message.type === 'user' ? 'You' : message.type === 'bot' ? 'Assistant' : 'System'}
+                    </span>
+                    <span className="message-time">{formatTime(message.timestamp)}</span>
+                  </div>
+                  <div className={`message-text ${message.isError ? 'error' : ''}`}>
+                    {message.content.split('\n').map((line, i) => (
+                      <p key={i}>{line}</p>
+                    ))}
+                  </div>
+                </div>
               </div>
+            ))}
+            
+            {loading && (
+              <div className="message bot">
+                <div className="message-avatar">🤖</div>
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-sender">Assistant</span>
+                  </div>
+                  <div className="message-text loading">
+                    <span className="loading-dots">{loadingStep || 'Processing...'}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {llmDecision && llmDecision.function_name && !loading && (
+              <div className="message system">
+                <div className="message-avatar">⚙️</div>
+                <div className="message-content">
+                  <div className="message-header">
+                    <span className="message-sender">Debug Info</span>
+                  </div>
+                  <div className="message-text debug">
+                    <details>
+                      <summary>🔧 View AI Decision Details</summary>
+                      <p><strong>Function:</strong> <code>{llmDecision.function_name}()</code></p>
+                      <p><strong>Parameters:</strong> <code>{JSON.stringify(llmDecision.parameters)}</code></p>
+                      <p><strong>Available Functions:</strong> {llmDecision.available_functions?.join(', ')}</p>
+                    </details>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <div ref={messagesEndRef} />
+          </div>
+          
+          <div className="input-area">
+            <div className="input-wrapper">
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Ask something about the contract... (e.g., 'What is the name?' or 'Total supply')"
+                disabled={loading || backendStatus !== 'connected'}
+                onKeyPress={(e) => e.key === 'Enter' && handleSubmit()}
+                className="chat-input"
+              />
+              <button 
+                onClick={handleSubmit} 
+                disabled={loading || backendStatus !== 'connected'}
+                className="send-btn"
+              >
+                {loading ? '⏳' : '📤'}
+              </button>
             </div>
-          )}
+            <div className="input-hint">
+              💡 Example questions: "What is the name?" | "Total supply" | "Token symbol"
+            </div>
+          </div>
         </div>
       </div>
     </div>
